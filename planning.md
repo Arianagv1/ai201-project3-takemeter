@@ -84,18 +84,65 @@ Because I'm sampling every comment, I expect the classes to be **imbalanced**: `
 
 > *Which metrics will you use, and why are they right for this task? (Accuracy alone is not enough — explain what else you need and why.)*
 
-*[to complete]*
+- Macro-averaged F1 (the headline metric). Some of my classes are imbalanced, I've predicted reaction/assertion will be common and reasoning rarer. Plain accuracy is dominated by the majority class: a lazy model that labels everything reaction could post high accuracy while being useless. Macro-F1 averages F1 across all four classes equally, so it penalizes ignoring the rare ones. 
+
+- Per-class precision / recall / F1 (sklearn's classification_report gives all of it). For example, I don't want to miss reasoning (recall), and I don't want to flood a class with false positives (precision).
+
+- Confusion matrix. This is where the hypotheses get tested: does the model actually confuse reasoning &analogy (a boundary I've predicted will get misrepresented)? Does assertion collapse into reaction? The matrix shows the shape of the errors, not just the rate.
 
 ### Definition of Success
 
 > *What performance would make this classifier genuinely useful? What is "good enough" for deployment in a real community tool?*
 
-*[to complete]*
+- Beat the baseline. Floor: fine-tuned DistilBERT macro-F1 > llama-3.3-70b few-shot macro-F1. If it can't beat a no-training LLM, fine-tuning added nothing.
+
+- Approach the human ceiling. A model can't reliably beat human agreement on the labels. If I  re-label a small batch and two passes agree ~85% of the time, then a model at ~80% macro-F1 is genuinely strong. Estimating this ceiling (re-annotate ~30 examples, or use the LLM as a second annotator and compute agreement) turns "good enough" from a guess into a grounded target.
 
 ### AI Tool Plan
 
-**Label stress-testing.** Give the AI my label definitions and edge-case description, and ask it to generate 5–10 posts that sit on the boundary between two labels. If it produces posts I can't classify cleanly, my definitions need tightening — done *before* annotating 200 examples.
+**Label stress-testing.** 
+In order to test my label definitions and edge-case descriptions, I asked Claude to generate 5 posts that sit on the boundary of the labels I created.
 
-**Annotation assistance.** Decide whether to use an LLM to pre-label a batch of examples before reviewing them myself. If so, note which tool and how I'll track which examples were pre-labeled (for disclosure in the AI usage section).
+> *"Think of it like sharing pizza. If 2 people share 8 slices they get 4 each, and as you invite fewer people each share grows. With nobody there, each 'share' would have to be endless — no number works, so it's undefined."* 
+Here, Pizza is the hook, but strip it and the limit argument survives which feels closer to reasoning.
 
-**Failure analysis.** Give my list of wrong predictions to an AI tool and ask it to identify patterns before writing up the evaluation. Note what patterns I'll look for and how I'll verify them myself.
+> *"It's undefined because there's no number you can multiply by zero to get two."* 
+Here, there is one clause, but it names the actual mechanism (the a×b=2 idea), not a decorative "because." I would classify this as reasoning, thin but genuine. 
+
+> *"Right?? You literally can't split something into zero piles, end of story."*
+Although there is emotional packaging, it makes a claim with no mechanism. Noise-floor rule says any content beyond feeling isn't reaction but assertion.
+
+> *"Ohh THIS is why 'infinity' feels wrong — saying each person gets infinite bananas is just silly."*
+Here, it's appreciation in tone, but "saying each person gets infinity is silly" is a mini reduction. However, because the comment is agreeing to another comment's argument (infinite bananas for a single person) this would be labeled as reaction.
+
+> *"It's like putting bananas into zero baskets — it just doesn't work."*
+This mentions a comparison, but the comparison does no explanatory work; strip it and nothing was explained. Here, it's assertion.
+
+**Annotation assistance.** 
+Baseline — run llama-3.3-70b zero/few-shot on held-out test set (with labels as ground truth) and record its F1. This is the bar distilbert-base-uncased must clear. It answers "was fine-tuning even worth it?" If a no-training LLM matches your fine-tuned model, fine-tuning brings me nothing (except a model that's ~1000× smaller and cheaper to run — which is its own win).
+Pre-labeling — run the same LLM over the unlabeled training data to draft labels, which I can then review and correct.
+
+**Why pre-labeling helps:**
+
+- Speed — the LLM drafts some labels; then I correct rather than label from scratch.
+
+- Consistency surfacing — it applies my written definitions uniformly, so wherever it disagrees with me is a flashing light that the definitions are ambiguous.
+
+- Free baseline — the same few-shot run, evaluated on the test set, doubles as the baseline.
+
+- Edge-case mining — the posts where I overrule the LLM are my hard cases; they feed my decision rules now and my failure analysis later.
+
+**Failure analysis.** 
+After training, I will study the predictions the model got wrong to find *patterns*, not just a number. 
+
+Concretely: after DistilBERT runs on the test set, export every error as (comment text, true label, predicted label). Hand that list to an LLM and ask "what patterns explain these mistakes?" Then *verify each pattern against the data* — the LLM hypothesizes, and I confirm.
+
+Patterns I will look for here:
+
+- Which label pairs get confused?
+
+- Surface artifacts — does it label every long comment reasoning regardless of content?
+
+- The accuracy blind spot — does a confident-but-wrong explanation get called reasoning? 
+
+- Minority-class collapse — does the rarest type (maybe assertion) have near-zero recall because there weren't enough examples?
