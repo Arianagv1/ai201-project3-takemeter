@@ -220,7 +220,7 @@ Rows are the **true** label; columns are what the model **predicted**. The diago
 
 An LLM (Claude) was used to help surface patterns across the errors; the findings below were then verified directly against the confusion matrix and cross-checked against all 17 misclassified texts (see the verified themes and worked examples below).
 
-**The dominant pattern is class collapse, not a single confused pair.** Read the bottom row of totals: the model predicted `analogy` **19 of 30 times** and `reasoning` 10 times, but `assertion` only **once** and `reaction` **never**. It essentially became a two-class "explanation" classifier that defaults to `analogy`.
+**The single most systematic error is class collapse toward the two largest "explanation" classes:** the model abandons `reaction` and `assertion` and routes nearly everything into `analogy`/`reasoning`. Read the bottom row of totals — the model predicted `analogy` **19 of 30 times** and `reasoning` 10 times, but `assertion` only **once** and `reaction` **never**. It essentially became a two-class classifier that defaults to `analogy`.
 
 Three specific directional failures account for almost all the errors:
 
