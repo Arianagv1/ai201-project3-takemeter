@@ -105,10 +105,12 @@ The model classified each of the **30 comments in the locked test set** (15% of 
 
 | Metric | Baseline (zero-shot `llama-3.3-70b`) | Fine-tuned DistilBERT |
 |---|---:|---:|
-| Accuracy | 0.60 | _TBD_ |
-| Macro F1 | 0.59 | _TBD_ |
-| Weighted F1 | 0.60 | _TBD_ |
+| Accuracy | 0.60 | **0.43** |
+| Macro F1 | 0.59 | **0.31** |
+| Weighted F1 | 0.60 | **0.36** |
 | Unparseable responses | 0 / 30 | — |
+
+The fine-tuned model **underperformed the zero-shot baseline by 17 points of accuracy**. The full analysis of why is in the [Evaluation Report](#evaluation-report) below — and that gap is the most informative result in this project.
 
 Per-class metrics for the baseline:
 
@@ -160,3 +162,149 @@ The most consequential knob on a dataset this small is **how many epochs** to tr
 With only ~140 training examples, more epochs would let the model start **memorizing** individual comments (overfitting) instead of learning the general signal that separates the four discourse types. The risk is highest exactly here: a model with 67M parameters can trivially memorize 140 short texts if given enough passes.
 
 Just as decisive is the **measurement problem**: the test set is only 30 comments, so a single example is worth ~3.3% accuracy. Any improvement from extra epochs would likely be *smaller than the noise* of that tiny test set — meaning I couldn't reliably tell whether a change helped or just got lucky. Tuning that can't be measured isn't worth the overfitting risk, so the conservative defaults (3 epochs, learning rate 2e-5, weight decay 0.01) are the principled choice for this data regime.
+
+---
+
+## Evaluation Report
+
+### What the committed output files show
+
+- **`evaluation_results.json`** — the machine-readable record of the run: both models' accuracy on the same 30-comment test set, the improvement delta (`-0.1667`), test-set size, the label→id map, and the base model. It is the reproducible source of the headline numbers quoted here.
+- **`confusion_matrix.png`** — a visual heatmap of the fine-tuned model's predictions against the true labels on the test set. It shows *where* the model's errors concentrate; the same matrix is transcribed as a table below so it reads cleanly in text.
+
+### Overall result
+
+| Metric | Baseline (zero-shot `llama-3.3-70b`) | Fine-tuned DistilBERT |
+|---|---:|---:|
+| Accuracy | 0.60 | 0.43 |
+| Macro F1 | 0.59 | 0.31 |
+| Weighted F1 | 0.60 | 0.36 |
+
+Fine-tuning **lowered** every metric. This is a real, diagnosable failure mode — not a bug — and the rest of this report explains exactly what the model learned instead of the intended task.
+
+### Per-class metrics, both models
+
+**Baseline (zero-shot LLM):**
+
+| Label | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| `reasoning` | 1.00 | 0.43 | 0.60 | 7 |
+| `analogy` | 0.53 | 0.73 | 0.62 | 11 |
+| `assertion` | 0.62 | 0.62 | 0.62 | 8 |
+| `reaction` | 0.50 | 0.50 | 0.50 | 4 |
+
+**Fine-tuned DistilBERT:**
+
+| Label | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| `reasoning` | 0.40 | 0.57 | 0.47 | 7 |
+| `analogy` | 0.42 | 0.73 | 0.53 | 11 |
+| `assertion` | 1.00 | 0.13 | 0.22 | 8 |
+| `reaction` | 0.00 | 0.00 | 0.00 | 4 |
+
+The single most telling number: the baseline gave every class an F1 between 0.50 and 0.62 — it *attempted* all four. The fine-tuned model scored **0.00 on `reaction`** and **0.22 on `assertion`**: it effectively stopped predicting the two minority classes at all.
+
+### Confusion matrix (fine-tuned model)
+
+Rows are the **true** label; columns are what the model **predicted**. The diagonal (bold) is correct predictions.
+
+| True ↓ \ Predicted → | reasoning | analogy | assertion | reaction | Total (actual) |
+|---|---:|---:|---:|---:|---:|
+| **reasoning** | **4** | 3 | 0 | 0 | 7 |
+| **analogy** | 3 | **8** | 0 | 0 | 11 |
+| **assertion** | 3 | 4 | **1** | 0 | 8 |
+| **reaction** | 0 | 4 | 0 | **0** | 4 |
+| **Total (predicted)** | 10 | 19 | 1 | 0 | 30 |
+
+### Where the model fails — pattern analysis
+
+An LLM (Claude) was used to help surface patterns across the errors; the findings below were then verified directly against the confusion matrix and cross-checked against all 17 misclassified texts (see the verified themes and worked examples below).
+
+**The dominant pattern is class collapse, not a single confused pair.** Read the bottom row of totals: the model predicted `analogy` **19 of 30 times** and `reasoning` 10 times, but `assertion` only **once** and `reaction` **never**. It essentially became a two-class "explanation" classifier that defaults to `analogy`.
+
+Three specific directional failures account for almost all the errors:
+
+1. **`reaction` → `analogy` (4 of 4, 100%).** Every single `reaction` comment was labeled `analogy`. The model never learned the class exists.
+2. **`assertion` → `reasoning`/`analogy` (7 of 8).** Bare claims were almost always read as explanations. Tellingly, `assertion` precision is 1.00 — *when* the model committed to `assertion` it was right, it just almost never committed.
+3. **`reasoning` ↔ `analogy` (3 each way).** The boundary predicted as hard in [planning.md](planning.md) did show symmetric confusion — but it is now a *secondary* problem behind the minority-class collapse.
+
+**Why the model failed — too little data for categories this subtle, not imbalance.** The dataset was reasonably balanced (`analogy` 34%, `assertion` 27%, `reasoning` 23%, `reaction` 15%), so imbalance is *not* the main cause. The real problem is that `reasoning`, `analogy`, and `assertion` **overlap heavily** — all three involve explaining or claiming, differing only in fine ways (*does it use a comparison? does it give a mechanism?*). Learning distinctions that subtle from ~140 examples (≈21–48 per class) is simply too little signal. The proof is in the confidence scores: **every one of the 17 wrong predictions landed at 0.28–0.29, and the 13 *correct* ones sit in the same 0.27–0.31 band** — all barely above the 0.25 floor for a blind 4-way guess. The model is no more confident when it is right than when it is wrong: it isn't *confidently* wrong, it is near-uniformly unsure on every comment, the signature of a model that never found discriminative features. Imbalance plays only a secondary role here: it decided *which* classes were abandoned first (the rarer, more distinct `reaction` and `assertion`), not *why* the model failed. Even a perfectly balanced 140 examples would likely struggle on a boundary this fine.
+
+**Labeling problem or data problem?** Mostly a **data-volume problem**, not annotation inconsistency: the labels followed explicit, documented decision rules (see [Labeling Process](#labeling-process)), and `assertion`'s precision of 1.00 shows the model labels a clear assertion correctly *when* it commits — it just rarely does. But re-reading the errors surfaced one genuine **labeling/boundary issue** as well: my `analogy` definition includes "lived experience," which overlaps with `reaction` comments that are personal anecdotes (see example #1 below). So `reaction`↔`analogy` is partly a taxonomy-overlap problem — a point I had to *correct* from an initial "purely data" read.
+
+**What would need to change.** In order of leverage: (1) **more minority-class data** — collect additional `reaction` and `assertion` comments to approach balance, since those are the easiest comment types to find; (2) **class-weighted loss**, so minority errors cost more during training; (3) **consider merging `reasoning`+`analogy` into a single `explanation` label** (the fallback noted in planning.md), which both removes the fuzziest boundary and doubles the examples per remaining class; (4) **a larger dataset overall** — 200 comments is small for a 4-way text classifier competing against a 70B-parameter baseline.
+
+### Themes verified by re-reading the misclassified texts
+
+After an LLM surfaced candidate patterns, I re-read all 17 wrong predictions to confirm or discard them:
+
+- **Causal connectives trigger `reasoning`.** Bare assertions containing "because" or "which is why" were flipped to `reasoning` even though no mechanism follows (see example #2 below). The model learned a shallow surface shortcut — *connective ⇒ argument* — rather than checking whether the comment actually explains *why*.
+- **First-person / lived-experience phrasing triggers `analogy`.** Personal asides were pulled into `analogy`, which connects directly to the label-overlap noted above.
+- **Discarded patterns:** I found *no* evidence of sarcasm-driven errors, and post length did **not** separate right from wrong predictions (the model misfired on both short claims and long explanations). I left these out rather than force a pattern that wasn't there.
+
+### Checkpoint instability (corroborating note)
+
+Out of curiosity, I also evaluated the checkpoint selected on plain **accuracy** (the notebook default) instead of macro F1. It collapsed in the *opposite* direction: `analogy` recall fell from 0.73 to **0.09** — the model almost stopped predicting `analogy` and over-predicted `reasoning`/`assertion` instead — and test accuracy was *lower* at 0.367. That the entire prediction distribution flips between two checkpoints of the same model, **and** that the accuracy-selected one scored worse on the test set despite being chosen for high validation accuracy, confirms two things: the model has no stable class representation (a textbook underfitting signature), and the 30-example validation set is too small to reliably guide checkpoint selection.
+
+### Three specific misclassifications
+
+Three real test comments, one per dominant error type. Every prediction below carried ~0.29 confidence — the model was essentially guessing.
+
+**1. `reaction` → `analogy`** (confidence 0.29)
+> "My ex-wife had to be the driver or she would get sick. That was nice because I can read in the car without any issues, so I got a lot of reading done while on the road."
+
+A personal aside that never explains the question (why motion sickness happens), so it is `reaction`. Two things converge: the model has *no* learned representation of `reaction` (it predicted that label 0 times), and the first-person, lived-experience phrasing surface-matches the `analogy` definition, which literally includes "lived experience." So this error is *both* data starvation **and** a real definitional overlap between `reaction` and `analogy`. **Fix:** more `reaction` data, plus a tighter rule that lived experience only counts as `analogy` when it is used to *explain the question*.
+
+**2. `assertion` → `reasoning`** (confidence 0.29)
+> "Because organic chemistry is incredibly important economically and biologically."
+
+This states *that* carbon's chemistry matters, not *why* it gets its own branch — a bare claim, so `assertion`. The likely trigger is the opening word **"Because"**: the model learned a shallow shortcut where a causal connective signals an argument, regardless of whether a mechanism follows. The same flip appears in the water-rationing error ("…*which is why* it is important not to ration water"). **Fix:** more `assertion` examples that contain "because / so / which is why" *without* a real mechanism, so the model stops keying on the connective.
+
+**3. `analogy` → `reasoning`** (confidence 0.28)
+> "Hot air and cold air both want to go down, but cold air is denser than hot air and when it goes down it says 'out of my way, hot air!'"
+
+This personifies air (*"it says 'out of my way, hot air!'"*) — a textbook everyday-framing `analogy`. But it also contains a real causal clause ("cold air is denser… when it goes down"), placing it exactly on the planning.md hard boundary: argument *and* comparison in one comment. The "primary explanatory device" rule resolves it for a human, but the model can't detect the comparison device and defaults to the structural argument. (The same pattern appears in the mushroom-cloud and pilots/ship-captains errors.) **Fix:** more mixed argument-plus-comparison examples, or merge the two labels into `explanation`.
+
+### Sample Classifications
+
+Test comments run through the fine-tuned model, shown with predicted label, confidence, and true label. The headline behavior is visible at a glance: **confidence never leaves the ~0.27–0.31 band whether the prediction is right or wrong** — just above the 0.25 chance floor. A model that is no more confident when correct than when wrong is essentially guessing.
+
+| Comment (abbreviated) | Predicted | Confidence | True | Correct? |
+|---|---|---:|---|:--:|
+| "Firefighters are trained in moving unconscious people around. When my mother in law had what we thought was a stroke…" | `analogy` | 0.28 | `analogy` | ✅ |
+| "My ex-wife had to be the driver or she would get sick… I got a lot of reading done…" | `analogy` | 0.29 | `reaction` | ❌ |
+| "Because organic chemistry is incredibly important economically and biologically." | `reasoning` | 0.29 | `assertion` | ❌ |
+| "Hot air and cold air both want to go down… it says 'out of my way, hot air!'" | `reasoning` | 0.28 | `analogy` | ❌ |
+| "your brain's basically running constant physics simulations from past experience" | `analogy` | 0.28 | `assertion` | ❌ |
+
+**Why the correct prediction is reasonable:** the firefighters comment explains *why* fire engines accompany ambulances entirely through a personal anecdote (helping move an unconscious relative) rather than a formal argument — lived experience used as the explanatory device — so `analogy` is genuinely the right call. Tellingly, its confidence (0.28) is no higher than the model's *wrong* predictions, so even this hit reads more like a lucky landing than a confident decision.
+
+### Reflection: what the model captured vs. what I intended
+
+I intended a **four-way discourse-type classifier** that could tell genuine explanation (`reasoning`, `analogy`) apart from bare claims (`assertion`) and non-contribution (`reaction`) — the full quality gradient that makes TakeMeter a *discourse-quality* meter.
+
+What the model actually learned is much narrower: **a near-binary "does this contain explanation-like content?" detector that leans toward `analogy`.** Its decision boundary captures roughly one axis — *amount of content* — rather than the four *types* I defined. And it learned even that weakly: with confidence pinned near 0.29 on every comment, it never formed strong preferences at all. The failure is better described as **underfitting than overfitting** — 140 examples across four overlapping categories was too little to learn any of the fine distinctions, so the model fell back on the broadest, safest guesses.
+
+What it missed is precisely the part that gives the taxonomy its point. `reaction` (recall 0.00) and `assertion` (recall 0.13) — the low end of the quality gradient — are exactly the classes the model erased. They were both the rarest *and* the subtlest to separate from an explanation, and that combination is fatal: the distinctions hardest to learn from few examples are the very ones that separate *noise* from *substance*, which is the whole reason the tool exists.
+
+The sharpest framing of the gap is the comparison itself: the zero-shot LLM gave all four classes a real shot (F1 0.50–0.62) because its pretraining already contains the *concepts* of a reaction or a bare assertion — it needs no examples. My fine-tuned model had to learn those concepts from scratch, and 200 labeled comments were not enough to teach them. **The taxonomy was sound; the dataset was too small — and the four categories too subtly different — to instill it.** That is the central, diagnosable lesson of this build, and it points to a concrete, testable fix: more data and/or fewer, better-separated labels (e.g., merging `reasoning` and `analogy` into `explanation`) before any further tuning.
+
+---
+
+## Spec Reflection
+
+**How the spec guided the build.** The decision rules I committed to in [planning.md](planning.md) — "primary explanatory device wins" and the `reaction` noise floor — did real work twice. First, they kept annotation consistent across 200 comments by giving me a rule to fall back on whenever a comment sat between two labels. Second, I copied the label definitions *and* those rules verbatim into the zero-shot baseline prompt, so the LLM judged comments by the same criteria I annotated by. That alignment is the only reason the baseline-vs-fine-tuned comparison is meaningful — both systems were measured against the same definition of each label.
+
+**How the implementation diverged, and why.** The spec anticipated exactly one hard boundary — `reasoning` vs `analogy` — and wrote a single decision rule for it. During annotation a *second*, unplanned ambiguity surfaced: personal anecdotes that sit between `reaction` and `analogy`, because my `analogy` definition explicitly includes "lived experience" while many `reaction` comments are personal asides. The spec didn't foresee this, so I made case-by-case calls during annotation, and the evaluation later confirmed it as a genuine taxonomy overlap (the firefighters and ex-wife examples). The divergence happened because real, varied data exposed a boundary the planning phase couldn't predict from the single divide-by-zero thread used for the original examples — itself a finding worth carrying into a v2 of the label set.
+
+## AI Usage
+
+AI assistance (Claude) was used during planning, prompt-writing, and analysis — not during annotation. Specific instances:
+
+**1. Label taxonomy design.** I directed Claude to critique my initial labels (Simplicity, Completeness, Cites Reasoning, Use of Analogy). It identified that these mixed two incompatible axes — *quality* (simplicity, completeness) and *method* (reasoning, analogy) — which cannot be ranked on a single scale, and recommended reframing around discourse *types*. It produced the `reasoning / analogy / assertion / reaction` scheme. **What I decided/overrode:** I chose the community (r/ELI5) and the single-label-with-edge-case-override structure myself, and made the call to sample all comments including nested replies — Claude advised on these but did not make the decisions.
+
+**2. Baseline classification prompt.** I directed Claude to write the zero-shot Groq prompt from my planning.md definitions, formatted for clean single-label output. It produced a four-label prompt with one example per label plus the two decision rules. **What I changed:** I verified the label strings matched my CSV exactly before running, since any mismatch would have marked every response unparseable.
+
+**3. Failure-pattern analysis (the assignment's AI step).** I pasted my misclassified test examples into Claude and asked it to surface common themes. It proposed a causal-connective shortcut ("because" → `reasoning`), a lived-experience → `analogy` overlap, and near-chance confidence across all predictions. **What I overrode:** Claude's first explanation leaned on *class imbalance* as the main cause; I pushed back because my dataset was roughly balanced (~15–34% per class), and the analysis was corrected to attribute the failure to **data volume plus subtly overlapping labels**, with imbalance demoted to a secondary factor. I verified each surfaced pattern by re-reading the test examples and confirmed the discarded ones (no sarcasm effect; length did not separate errors).
+
+**Annotation disclosure.** All 200 comments were labeled manually by me. I did **not** use an LLM to pre-label any part of the dataset; AI assistance was limited to label design, prompt-writing, and post-hoc failure analysis as described above.
