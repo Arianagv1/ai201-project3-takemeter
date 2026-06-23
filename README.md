@@ -78,8 +78,54 @@ The hardest of the three. The logic is coherent, but — as with case #2 — it 
 |---|---:|---:|
 | `analogy` | 69 | 34.5% |
 | `assertion` | 55 | 27.5% |
-| `reasoning` | 46 | 23.0% |
+| `reasoning` | 47 | 23.0% |
 | `reaction` | 30 | 15.0% |
 | **Total** | **200** | **100%** |
 
 As anticipated in [planning.md](planning.md), the classes are imbalanced — `reaction` is the smallest at roughly 15%. This is expected when sampling *all* comments in a thread, and it directly shapes evaluation: overall accuracy alone would be misleading, so per-class precision/recall/F1 and a confusion matrix are used to keep the minority classes honest.
+
+---
+
+## Baseline Comparison
+
+Before fine-tuning, a **zero-shot baseline** was established to measure how hard the task is for a general-purpose model with no training. This gives the fine-tuned model's score real meaning: beating a no-training LLM is the minimum bar for fine-tuning to have been worthwhile.
+
+### Baseline approach
+
+The baseline uses **`llama-3.3-70b-versatile`** (via the Groq API) as a zero-shot classifier — no examples from the training data, no fine-tuning. A single system prompt:
+
+1. names the community (r/ELI5) and the classification task,
+2. defines all four labels in plain language (copied from [planning.md](planning.md)),
+3. includes one real example comment per label drawn from the dataset, and
+4. instructs the model to output **only** the lowercase label name, so the notebook's parser can match it exactly.
+
+The model classified each of the **30 comments in the locked test set** (15% of the 200-comment dataset, held out and never used for training). Every response was parsed against the exact label strings. **The fine-tuned model is evaluated on this same 30-comment test set**, so the two systems are directly comparable.
+
+### Results on the shared test set
+
+| Metric | Baseline (zero-shot `llama-3.3-70b`) | Fine-tuned DistilBERT |
+|---|---:|---:|
+| Accuracy | 0.60 | _TBD_ |
+| Macro F1 | 0.59 | _TBD_ |
+| Weighted F1 | 0.60 | _TBD_ |
+| Unparseable responses | 0 / 30 | — |
+
+Per-class metrics for the baseline:
+
+| Label | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| `reasoning` | 1.00 | 0.43 | 0.60 | 7 |
+| `analogy` | 0.53 | 0.73 | 0.62 | 11 |
+| `assertion` | 0.62 | 0.62 | 0.62 | 8 |
+| `reaction` | 0.50 | 0.50 | 0.50 | 4 |
+
+### What the baseline reveals
+
+The headline number — 60% accuracy against a ~25% random-chance floor for four classes — shows a general model can do *something* with the task but is far from reliable. The per-class split is more telling:
+
+- **`reasoning` has perfect precision (1.00) but low recall (0.43).** The model only labels a comment `reasoning` when it is certain, catching just 3 of 7 — the other 4 slip through.
+- **`analogy` is the catch-all** (precision 0.53, recall 0.73): it absorbs comments the model is unsure about, which is almost certainly where the missed `reasoning` comments landed.
+
+This confirms the hypothesis from [planning.md](planning.md): **`reasoning` and `analogy` are the genuinely hard boundary.** `assertion` is mediocre but unbiased, and `reaction` (support 4) is too small to draw firm conclusions from.
+
+**Hypothesis to test after fine-tuning:** fine-tuning should chiefly (1) raise `reasoning` recall by recovering comments currently misfiled as `analogy`, and (2) tighten `analogy` precision as a result. This will be checked against the fine-tuned model's confusion matrix.
