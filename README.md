@@ -129,3 +129,34 @@ The headline number — 60% accuracy against a ~25% random-chance floor for four
 This confirms the hypothesis from [planning.md](planning.md): **`reasoning` and `analogy` are the genuinely hard boundary.** `assertion` is mediocre but unbiased, and `reaction` (support 4) is too small to draw firm conclusions from.
 
 **Hypothesis to test after fine-tuning:** fine-tuning should chiefly (1) raise `reasoning` recall by recovering comments currently misfiled as `analogy`, and (2) tighten `analogy` precision as a result. This will be checked against the fine-tuned model's confusion matrix.
+
+---
+
+## Model & Fine-Tuning
+
+TakeMeter fine-tunes **`distilbert-base-uncased`** — a compact (~67M-parameter) language model — by attaching a fresh 4-way classification head and continuing training on the 70% training split (~140 comments). Training ran on a Colab T4 GPU.
+
+### Training configuration
+
+| Setting | Value |
+|---|---|
+| Epochs | 3 |
+| Learning rate | 2e-5 |
+| Batch size | 16 |
+| Weight decay | 0.01 |
+| Warmup steps | 50 |
+| Best-checkpoint metric | macro F1 (changed from default `accuracy`) |
+
+### Key training decision: selecting on macro F1, not accuracy
+
+The one default I changed was the metric used to pick the best checkpoint: from **accuracy** to **macro F1**. With `load_best_model_at_end=True`, the trainer keeps whichever epoch scores highest on the validation set — so this choice directly determines which model ships.
+
+Accuracy is dominated by the majority class (`analogy`): a checkpoint could excel on `analogy` and fail the minority `reaction` class while still posting a high accuracy score. Macro F1 averages the per-class F1 scores **equally**, so weakness on any single label — including the small ones — is penalized just as heavily. Switching to it keeps the *training* objective consistent with this project's imbalance-aware evaluation, where overall accuracy alone is treated as misleading.
+
+### Key training decision: holding epochs at 3
+
+The most consequential knob on a dataset this small is **how many epochs** to train, and I deliberately kept it at **3** rather than increasing it — for a concrete reason, not just because it was the default.
+
+With only ~140 training examples, more epochs would let the model start **memorizing** individual comments (overfitting) instead of learning the general signal that separates the four discourse types. The risk is highest exactly here: a model with 67M parameters can trivially memorize 140 short texts if given enough passes.
+
+Just as decisive is the **measurement problem**: the test set is only 30 comments, so a single example is worth ~3.3% accuracy. Any improvement from extra epochs would likely be *smaller than the noise* of that tiny test set — meaning I couldn't reliably tell whether a change helped or just got lucky. Tuning that can't be measured isn't worth the overfitting risk, so the conservative defaults (3 epochs, learning rate 2e-5, weight decay 0.01) are the principled choice for this data regime.
