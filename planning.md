@@ -78,7 +78,7 @@ Because I'm sampling every comment, I expect the classes to be **imbalanced**: `
 
 ---
 
-## Milestone Two *(to complete)*
+## Milestone Two 
 
 ### Evaluation Metrics
 
